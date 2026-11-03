@@ -8,36 +8,53 @@ from dataclasses import dataclass
 from .models import ProductOffer
 from .utils import clean_product_url, normalize, query_tokens
 
-# Palavras típicas de acessórios baratos que poluem buscas de produtos principais
-ACCESSORY_TERMS = (
+# Palavras puramente de acessórios (raramente representam o produto principal)
+PURE_ACCESSORY_TERMS = {
     "pelicula",
-    "capa",
     "capinha",
-    "case",
-    "bolsa",
-    "estojo",
-    "maleta",
-    "protetor",
-    "protecao",
-    "adesivo",
     "skin",
-    "suporte",
-    "stand",
-    "grip",
-    "thumb",
+    "adesivo",
+    "estojo",
+    "bag",
+    "maleta",
+    "thumb grip",
     "borrachinha",
-    "alca",
+    "porta jogos",
+    "porta cartoes",
+    "earpad",
+    "earpads",
+    "almofada",
+    "almofadas",
+    "skates",
+    "feets",
+    "grip tape",
+}
+
+# Palavras contextuais de acessórios (podem ser acessórios OU características do produto, ex: 'com cabo USB-C')
+CONTEXT_ACCESSORY_TERMS = {
     "cabo",
     "carregador",
     "fonte",
     "adaptador",
+    "suporte",
     "dock",
-    "porta jogos",
-    "porta cartoes",
-    "compativel com",
-    "compativel p/",
-    "volante",
-)
+    "case",
+    "capa",
+    "alca",
+    "dongle",
+}
+
+# Sinônimos de tipos de produto para evitar descartar anúncios legítimos
+DEVICE_SYNONYMS = {
+    "fone": {"fone", "fones", "headset", "headsets", "headphone", "headphones", "auricular", "earphone", "earphones", "earbuds", "earbud"},
+    "headset": {"fone", "fones", "headset", "headsets", "headphone", "headphones", "auricular", "earphone", "earbuds"},
+    "headphone": {"fone", "fones", "headset", "headsets", "headphone", "headphones", "auricular"},
+    "celular": {"celular", "celulares", "smartphone", "smartphones", "telefone", "telefones"},
+    "smartphone": {"celular", "celulares", "smartphone", "smartphones", "telefone"},
+    "videogame": {"videogame", "videogames", "console", "consoles"},
+    "videogames": {"videogame", "videogames", "console", "consoles"},
+    "computador": {"computador", "pc", "desktop"},
+}
 
 
 @dataclass(frozen=True)
@@ -193,16 +210,43 @@ def compute_bayesian_rating(
 
 def is_accessory_title(norm_title: str, norm_query: str) -> bool:
     """Retorna True se o título for de um acessório (capa, película, case, etc.) não pedido na busca."""
-    for term in ACCESSORY_TERMS:
+    # 1. Se a busca do usuário pediu o termo explicitamente, não bloqueia
+    for term in PURE_ACCESSORY_TERMS | CONTEXT_ACCESSORY_TERMS:
         if term in norm_query:
-            continue
+            return False
+
+    # 2. Termos estritamente de acessórios: se aparecerem no título, é acessório
+    for term in PURE_ACCESSORY_TERMS:
         if re.search(rf"\b{re.escape(term)}\b", norm_title):
             return True
-    # Padrão clássico de acessório: "... para Nintendo Switch" / "... p/ iPhone"
+
+    # 3. Termos contextuais: são acessórios SE o título começar com eles (ex: 'Cabo USB para...', 'Adaptador...', 'Case...')
+    first_title_word = norm_title.split()[0] if norm_title.split() else ""
+    if first_title_word in CONTEXT_ACCESSORY_TERMS:
+        return True
+
+    # 4. Padrões relacionais: 'cabo/adaptador/case/capa para/p/compativel'
+    for term in CONTEXT_ACCESSORY_TERMS:
+        pattern = rf"\b{re.escape(term)}\b(?:\s+\w+){{0,3}}\s+(?:para|p/|compativel com|indicado para)\b"
+        if re.search(pattern, norm_title):
+            return True
+
+    # 5. Padrão clássico de acessório: "... para Nintendo Switch" / "... p/ iPhone"
     first_token = query_tokens(norm_query)[0] if query_tokens(norm_query) else ""
     if first_token and re.search(rf"\b(?:para|p/)\s+{re.escape(first_token)}\b", norm_title):
-        if not norm_title.startswith(first_token) and "console" not in norm_title[:25]:
+        main_device_prefixes = ("console", "headset", "fone", "mouse", "smartphone", "celular", "teclado")
+        if not norm_title.startswith(first_token) and not any(norm_title.startswith(w) for w in main_device_prefixes):
             return True
+
+    return False
+
+
+def token_matches(token: str, title_tokens: set[str]) -> bool:
+    """Verifica se o token ou seus sinônimos equivalentes aparecem nos tokens do título."""
+    if token in title_tokens:
+        return True
+    if token in DEVICE_SYNONYMS:
+        return any(syn in title_tokens for syn in DEVICE_SYNONYMS[token])
     return False
 
 
@@ -212,7 +256,7 @@ def is_relevant(offer: ProductOffer, query: str, category: str | None = None) ->
     norm_query = normalize(query)
     title_tokens = set(re.findall(r"[a-z0-9]+", norm_title))
 
-    if not all(token in title_tokens for token in query_tokens(query)):
+    if not all(token_matches(token, title_tokens) for token in query_tokens(query)):
         return False
 
     rule = resolve_category(category)
@@ -241,8 +285,11 @@ def rank_top_cheapest_and_reliable(
     max_price: float | None = None,
     category: str | None = None,
 ) -> tuple[list[ProductOffer], bool]:
-    """Filtra ofertas relevantes que atingem o piso anti-golpe (500+ avaliações por padrão)
-    e ordena estritamente pelo menor preço.
+    """Filtra ofertas relevantes em camadas progressivas de segurança:
+    1. Tier 1 (Anti-Golpe): se houver ofertas com 500+ avaliações (ou o piso configurado), usa somente elas.
+    2. Tier 2 (Alta Reputação): se não houver 500+, busca por 50+ avaliações e nota >= 4.0.
+    3. Tier 3 (Produtos de Nicho/Específicos): se não houver 50+, busca por 5+ avaliações e nota >= 3.8.
+    4. Tier 4 (Lançamentos/Poucas avaliações): se não houver 5+, exibe as opções mais baratas disponíveis com aviso.
     """
     rule = resolve_category(category)
     effective_min_price = min_price if min_price is not None else rule.min_price
@@ -265,20 +312,30 @@ def rank_top_cheapest_and_reliable(
         unique.setdefault(offer.url.split("?")[0], offer)
     candidates = list(unique.values())
 
-    reliable = [
-        o
-        for o in candidates
+    if not candidates:
+        return [], False
+
+    # Tier 1: Filtro anti-golpe estrito (500+ avaliações e nota satisfatória)
+    tier1 = [
+        o for o in candidates
         if o.reviews_count >= min_required_reviews and o.reliability_score >= min_acceptable_rating
     ]
+    if tier1:
+        tier1.sort(key=lambda o: (o.price, -o.reliability_score, -o.reviews_count))
+        return tier1[:top_k], False
 
-    if reliable:
-        # Camada estrita anti-golpe: se há ofertas com 500+ avaliações, retorna SOMENTE elas
-        # (nunca mistura anúncios sem avaliações junto com os confiáveis).
-        reliable.sort(key=lambda o: (o.price, -o.reliability_score, -o.reviews_count))
-        return reliable[:top_k], False
+    # Tier 2: Boa reputação (50+ avaliações e nota >= 4.0)
+    tier2 = [o for o in candidates if o.reviews_count >= 50 and o.rating >= 4.0]
+    if tier2:
+        tier2.sort(key=lambda o: (o.price, -o.reliability_score, -o.reviews_count))
+        return tier2[:top_k], True
 
-    # Fallback seguro caso nenhum anúncio nas 4 lojas tenha atingido 500 avaliações:
-    # prioriza os que têm mais avaliações (nunca anúncios com 0 avaliações)
-    rated_candidates = [o for o in candidates if o.reviews_count >= 50 and o.rating >= 4.0]
-    rated_candidates.sort(key=lambda o: (-o.reviews_count, o.price))
-    return rated_candidates[:top_k], True
+    # Tier 3: Produtos de nicho / específicos (5+ avaliações e nota >= 3.8)
+    tier3 = [o for o in candidates if o.reviews_count >= 5 and o.rating >= 3.8]
+    if tier3:
+        tier3.sort(key=lambda o: (o.price, -o.reliability_score, -o.reviews_count))
+        return tier3[:top_k], True
+
+    # Tier 4: Produtos muito novos ou lançamentos com poucas avaliações registradas
+    candidates.sort(key=lambda o: (o.price, -o.reliability_score, -o.reviews_count))
+    return candidates[:top_k], True

@@ -144,6 +144,54 @@ class TestUtilsAndScorer(unittest.TestCase):
         )
         self.assertEqual(top_acc[0].price, 22.85)
 
+    def test_niche_product_and_cable_in_title(self):
+        fuxi_offers = [
+            ProductOffer(
+                store_name="Amazon",
+                title="Havit Fone de Ouvido Headset Gamer Fuxi-H3 Black Com Fio e Sem Fio, Wireless 2,4GHz, Bluetooth, Cabo USB-C",
+                price=149.88,
+                url="https://amazon.com.br/dp/B0CKTR6N2L",
+                rating=4.6,
+                reviews_count=7900,
+            ),
+            ProductOffer(
+                store_name="Amazon",
+                title="Cabo USB-C de Carregamento para Fone Fuxi H3",
+                price=29.90,
+                url="https://amazon.com.br/dp/cabo",
+                rating=4.8,
+                reviews_count=900,
+            ),
+        ]
+        top, _ = rank_top_cheapest_and_reliable(fuxi_offers, query="fone fuxi h3")
+        self.assertEqual(len(top), 1)
+        self.assertEqual(top[0].price, 149.88)
+        self.assertIn("Havit", top[0].title)
+
+        # Teste de produto de nicho com poucas avaliações (ex: mouse específico com 15 avaliações)
+        niche_mouse = [
+            ProductOffer(
+                store_name="Shopee",
+                title="Mouse Gamer Sem Fio VXE Dragonfly R1 SE 2K",
+                price=175.50,
+                url="https://shopee.com.br/m1",
+                rating=4.8,
+                reviews_count=18,
+            ),
+            ProductOffer(
+                store_name="Amazon",
+                title="Mouse Gamer Sem Fio VXE Dragonfly R1 Pro Max",
+                price=289.00,
+                url="https://amazon.com.br/m2",
+                rating=4.9,
+                reviews_count=25,
+            ),
+        ]
+        top_mouse, used_fb = rank_top_cheapest_and_reliable(niche_mouse, query="mouse vxe r1")
+        self.assertTrue(used_fb)
+        self.assertEqual(len(top_mouse), 2)
+        self.assertEqual(top_mouse[0].price, 175.50)
+
 
 class TestStoreParsers(unittest.TestCase):
     def test_mercadolivre_parser(self):

@@ -54,13 +54,20 @@ class AmazonAdapter(BaseStoreAdapter):
             if not title:
                 continue
 
+            asin = (card.get("data-asin") or "").strip()
             link_el = (
-                card.select_one("h2 a[href]")
+                card.select_one('a[href*="/dp/"]')
+                or card.select_one("h2 a[href]")
                 or card.select_one('a.a-link-normal.s-line-clamp-2[href]')
                 or card.select_one('a.a-link-normal.s-no-outline[href]')
-                or card.select_one('a[href*="/dp/"]')
             )
             href = link_el.get("href", "").strip() if link_el else ""
+            if "/sspa/click" in href and "url=" in href:
+                parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                if "url" in parsed_qs and parsed_qs["url"]:
+                    href = urllib.parse.unquote(parsed_qs["url"][0])
+            if not href and asin:
+                href = f"/dp/{asin}"
             if not href:
                 continue
             url = href if href.startswith("http") else urllib.parse.urljoin(self.base_url, href)

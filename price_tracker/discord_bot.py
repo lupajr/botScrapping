@@ -30,7 +30,11 @@ def get_bot_token() -> str:
     return token
 
 
-async def run_price_search(raw_input: str, explicit_category: str | None = None):
+async def run_price_search(
+    raw_input: str,
+    explicit_category: str | None = None,
+    min_reviews: int = 500,
+):
     clean_prod, detected_cat = extract_category_from_text(raw_input)
     category = explicit_category or detected_cat
     produto = clean_prod if (detected_cat and not explicit_category) else raw_input.strip()
@@ -41,7 +45,11 @@ async def run_price_search(raw_input: str, explicit_category: str | None = None)
     results = await search_all_stores(store_query, headless=True, timeout=60.0)
     all_offers = [offer for res in results for offer in res.offers]
     top, used_fallback = rank_top_cheapest_and_reliable(
-        all_offers, query=produto, top_k=3, category=category
+        all_offers,
+        query=produto,
+        top_k=3,
+        min_required_reviews=min_reviews,
+        category=category,
     )
     return produto, rule, top, results, used_fallback
 
@@ -54,6 +62,11 @@ CATEGORY_CHOICES = [
     app_commands.Choice(name="💻 Informática / Hardware", value="informatica"),
     app_commands.Choice(name="🎒 Acessórios (Capas, Películas, Cases, Cabos)", value="acessorios"),
     app_commands.Choice(name="📦 Geral (Sem Acessórios)", value="geral"),
+]
+
+SECURITY_CHOICES = [
+    app_commands.Choice(name="🛡️ 500+ avaliações (Padrão Anti-Golpe)", value=500),
+    app_commands.Choice(name="🔒 1.000+ avaliações (Máxima Segurança)", value=1000),
 ]
 
 
@@ -90,32 +103,35 @@ def create_bot(enable_message_content: bool = True) -> commands.Bot:
 
     @bot.tree.command(
         name="preco",
-        description="Busca as 3 opções mais baratas e confiáveis nas lojas e te avisa quando terminar",
+        description="Busca as 3 opções mais baratas e confiáveis (500+ avaliações) e te avisa quando terminar",
     )
     @app_commands.describe(
         produto="Nome do produto (ex: Nintendo Switch OLED, ou 'Nintendo Switch OLED video games')",
         categoria="Categoria desejada (opcional: filtra consoles, controles, acessórios, etc.)",
+        min_avaliacoes="Filtro anti-golpe de avaliações mínimas (padrão: 500+ avaliações)",
     )
-    @app_commands.choices(categoria=CATEGORY_CHOICES)
+    @app_commands.choices(categoria=CATEGORY_CHOICES, min_avaliacoes=SECURITY_CHOICES)
     async def slash_preco(
         interaction: discord.Interaction,
         produto: str,
         categoria: app_commands.Choice[str] | None = None,
+        min_avaliacoes: app_commands.Choice[int] | None = None,
     ) -> None:
         user_mention = interaction.user.mention
         explicit_cat = categoria.value if categoria else None
+        min_rev = min_avaliacoes.value if min_avaliacoes else 500
         clean_prod, detected_cat = extract_category_from_text(produto)
         preview_rule = resolve_category(explicit_cat or detected_cat)
         preview_prod = clean_prod if (detected_cat and not explicit_cat) else produto.strip()
 
         await interaction.response.send_message(
             f"🔎 {user_mention}, iniciei a busca por **`{preview_prod}`** "
-            f"(📂 Categoria: **{preview_rule.label}**)!\n"
+            f"(📂 **{preview_rule.label}** | 🛡️ Anti-Golpe: **{min_rev}+ avaliações**)!\n"
             f"Vou te marcar assim que terminar (~12 segundos)..."
         )
 
         final_prod, rule, top, results, used_fallback = await run_price_search(
-            produto, explicit_category=explicit_cat
+            produto, explicit_category=explicit_cat, min_reviews=min_rev
         )
         allowed = discord.AllowedMentions(users=True)
 

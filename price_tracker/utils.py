@@ -69,10 +69,10 @@ def clean_product_url(url: str) -> str:
     """Remove parâmetros de rastreamento gigantes para deixar o link curto e clicável no terminal."""
     if not url:
         return url
-    # Amazon: simplifica para https://www.amazon.com.br/<slug>/dp/<ASIN> ou /dp/<ASIN>
-    amz_match = re.match(r"(https?://www\.amazon\.com\.br(?:/[^/?#]+)?/dp/[A-Z0-9]{10})", url)
-    if amz_match:
-        return amz_match.group(1)
+    # Amazon: unifica qualquer link do mesmo ASIN para https://www.amazon.com.br/dp/<ASIN>
+    amz_asin = re.search(r"amazon\.com\.br(?:/[^/?#]+)?/dp/([A-Z0-9]{10})", url)
+    if amz_asin:
+        return f"https://www.amazon.com.br/dp/{amz_asin.group(1)}"
     # Remove query strings e fragmentos de tracking (#position=..., ?dib=...)
     return url.split("?")[0].split("#")[0]
 

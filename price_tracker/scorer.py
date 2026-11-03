@@ -180,10 +180,10 @@ def build_store_search_query(query: str, category: str | None = None) -> str:
 def compute_bayesian_rating(
     rating: float,
     reviews: int,
-    min_reviews_threshold: int = 20,
+    min_reviews_threshold: int = 500,
     baseline_rating: float = 3.5,
 ) -> float:
-    """Média bayesiana: evita que 1 avaliação nota 5 valha mais que 5.000 avaliações nota 4,7."""
+    """Média bayesiana calibrada para camada anti-golpe (limiar de 500 avaliações)."""
     if reviews <= 0 or rating <= 0:
         return round(baseline_rating * 0.7, 2)
     v, m = reviews, min_reviews_threshold
@@ -235,19 +235,23 @@ def rank_top_cheapest_and_reliable(
     offers: list[ProductOffer],
     query: str,
     top_k: int = 3,
-    min_required_reviews: int = 5,
-    min_acceptable_rating: float = 3.8,
+    min_required_reviews: int = 500,
+    min_acceptable_rating: float = 4.0,
     min_price: float | None = None,
     max_price: float | None = None,
     category: str | None = None,
 ) -> tuple[list[ProductOffer], bool]:
-    """Filtra ofertas relevantes para a categoria, confiáveis e ordena por menor preço."""
+    """Filtra ofertas relevantes que atingem o piso anti-golpe (500+ avaliações por padrão)
+    e ordena estritamente pelo menor preço.
+    """
     rule = resolve_category(category)
     effective_min_price = min_price if min_price is not None else rule.min_price
 
     for offer in offers:
         offer.url = clean_product_url(offer.url)
-        offer.reliability_score = compute_bayesian_rating(offer.rating, offer.reviews_count)
+        offer.reliability_score = compute_bayesian_rating(
+            offer.rating, offer.reviews_count, min_reviews_threshold=max(min_required_reviews, 20)
+        )
 
     candidates = [o for o in offers if is_relevant(o, query, category=category)]
     if effective_min_price is not None:
@@ -267,12 +271,14 @@ def rank_top_cheapest_and_reliable(
         if o.reviews_count >= min_required_reviews and o.reliability_score >= min_acceptable_rating
     ]
 
-    used_fallback = len(reliable) < top_k
-    if used_fallback:
-        rest = [o for o in candidates if o not in reliable]
-        rest.sort(key=lambda o: (o.price, -o.reliability_score))
-        reliable.sort(key=lambda o: (o.price, -o.reliability_score))
-        return (reliable + rest)[:top_k], True
+    if reliable:
+        # Camada estrita anti-golpe: se há ofertas com 500+ avaliações, retorna SOMENTE elas
+        # (nunca mistura anúncios sem avaliações junto com os confiáveis).
+        reliable.sort(key=lambda o: (o.price, -o.reliability_score, -o.reviews_count))
+        return reliable[:top_k], False
 
-    reliable.sort(key=lambda o: (o.price, -o.reliability_score))
-    return reliable[:top_k], False
+    # Fallback seguro caso nenhum anúncio nas 4 lojas tenha atingido 500 avaliações:
+    # prioriza os que têm mais avaliações (nunca anúncios com 0 avaliações)
+    rated_candidates = [o for o in candidates if o.reviews_count >= 50 and o.rating >= 4.0]
+    rated_candidates.sort(key=lambda o: (-o.reviews_count, o.price))
+    return rated_candidates[:top_k], True

@@ -49,8 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--lojas", nargs="+", choices=list(ALL_ADAPTERS), help="Lojas a consultar (padrão: todas)"
     )
     parser.add_argument("--top", type=int, default=3, help="Quantidade de ofertas no ranking")
-    parser.add_argument("--min-avaliacoes", type=int, default=5, help="Mínimo de avaliações")
-    parser.add_argument("--nota-minima", type=float, default=3.8, help="Nota ponderada mínima (0-5)")
+    parser.add_argument(
+        "--min-avaliacoes",
+        type=int,
+        default=500,
+        help="Mínimo de avaliações anti-golpe (padrão: 500; use 1000 para ultra seguro)",
+    )
+    parser.add_argument("--nota-minima", type=float, default=4.0, help="Nota ponderada mínima (0-5)")
     parser.add_argument("--preco-min", type=float, help="Ignora ofertas abaixo deste preço")
     parser.add_argument("--preco-max", type=float, help="Ignora ofertas acima deste preço")
     parser.add_argument("--timeout", type=float, default=90, help="Tempo máximo por loja (s)")

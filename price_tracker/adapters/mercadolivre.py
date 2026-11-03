@@ -1,11 +1,14 @@
 """Adaptador do Mercado Livre usando Playwright + BeautifulSoup.
 
-Utiliza User-Agent híbrido Chrome + WhatsApp In-App para que o Mercado Livre execute
-o desafio automático de Proof-of-Work ( ~6s ) em vez de exigir login (account-verification).
+Utiliza User-Agent híbrido Chrome + WhatsApp In-App para resolver automaticamente o
+desafio Proof-of-Work (~6s) e consulta em paralelo a contagem exata de opiniões
+dos produtos mais bem avaliados para garantir a blindagem anti-golpe (500+ avaliações).
 """
 
 from __future__ import annotations
 
+import asyncio
+import re
 import urllib.parse
 from bs4 import BeautifulSoup
 
@@ -37,14 +40,10 @@ class MercadoLivreAdapter(BaseStoreAdapter):
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(direct_url, wait_until="domcontentloaded", timeout=35000)
 
-            # Aguarda o desafio automático de Proof-of-Work (_bmstate -> _bmc) concluir
-            # e carregar os cards reais na página (~5 a 8 segundos).
             for _ in range(14):
                 await page.wait_for_timeout(1000)
                 if any(k in page.url for k in ("account-verification", "/login", "/captcha/wall")):
-                    raise StoreBlockedError(
-                        "Mercado Livre solicitou verificação de conta."
-                    )
+                    raise StoreBlockedError("Mercado Livre solicitou verificação de conta.")
                 try:
                     cnt = await page.locator(
                         "li.ui-search-layout__item, div.poly-card"
@@ -52,16 +51,47 @@ class MercadoLivreAdapter(BaseStoreAdapter):
                     if cnt > 0:
                         break
                 except Exception:
-                    # Página pode estar navegando após concluir o PoW
                     continue
 
             await self.scroll_page(page, steps=3)
             await page.wait_for_load_state("domcontentloaded", timeout=10000)
             html = await page.content()
+
+            offers = self._parse_html(html)
+            # No layout compacto (search-web-mobile), a nota aparece no card mas o total
+            # de opiniões fica na página do produto. Buscamos em paralelo (~1s) nos candidatos avaliados.
+            await self._enrich_reviews_count(context, offers)
         finally:
             await context.close()
 
-        return self._parse_html(html)
+        return offers
+
+    async def _enrich_reviews_count(self, context, offers: list[ProductOffer]) -> None:
+        candidates = [o for o in offers if o.rating > 0 and o.reviews_count == 0]
+        candidates.sort(key=lambda o: o.price)
+        targets = candidates[:10]
+        if not targets:
+            return
+
+        async def fetch_one(offer: ProductOffer) -> None:
+            try:
+                resp = await context.request.get(
+                    offer.url, headers={"User-Agent": ML_INAPP_UA}, timeout=8000
+                )
+                if resp.status != 200:
+                    return
+                text = await resp.text()
+                m_op = re.search(r"(\d+(?:[.,]\d+)?)\s*opini[õo]es", text, re.I)
+                if m_op:
+                    offer.reviews_count = parse_count(m_op.group(1))
+                    return
+                m_sold = re.search(r"\+?(\d+(?:[.,]\d+)?\s*(?:mil|k)?)\s*vendidos", text, re.I)
+                if m_sold:
+                    offer.reviews_count = parse_count(m_sold.group(1))
+            except Exception:
+                pass
+
+        await asyncio.gather(*(fetch_one(o) for o in targets))
 
     def _parse_html(self, html: str) -> list[ProductOffer]:
         soup = BeautifulSoup(html, "lxml")
@@ -94,7 +124,6 @@ class MercadoLivreAdapter(BaseStoreAdapter):
                 continue
             seen_urls.add(url)
 
-            # Preço atual (ignora preço antigo riscado <s>)
             price_container = card.select_one(
                 ".poly-price__current, .ui-search-price__second-line, .andes-money-amount--cents-superscript"
             ) or card
@@ -111,8 +140,8 @@ class MercadoLivreAdapter(BaseStoreAdapter):
                 continue
 
             rating_el = card.select_one(
-                ".poly-reviews__rating, .ui-search-reviews__rating-number, "
-                "span.andes-visually-hidden"
+                ".poly-reviews__rating, .poly-component__review-compacted, "
+                ".ui-search-reviews__rating-number, span.andes-visually-hidden"
             )
             rating = parse_rating(rating_el.get_text(" ", strip=True)) if rating_el else 0.0
 

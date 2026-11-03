@@ -66,7 +66,15 @@ class TestUtilsAndScorer(unittest.TestCase):
                 price=235.00,
                 url="https://americanas.com.br/produto/3",
                 rating=4.6,
-                reviews_count=85,
+                reviews_count=850,
+            ),
+            ProductOffer(
+                store_name="Mercado Livre",
+                title="Fone Bluetooth JBL Tune 520BT Golpe Barato",
+                price=110.00,
+                url="https://mercadolivre.com.br/p/scam",
+                rating=4.9,
+                reviews_count=45,  # Menos de 500 avaliações -> bloqueado pela camada anti-golpe!
             ),
             ProductOffer(
                 store_name="Mercado Livre",
@@ -74,7 +82,7 @@ class TestUtilsAndScorer(unittest.TestCase):
                 price=25.00,
                 url="https://mercadolivre.com.br/p/case",
                 rating=4.9,
-                reviews_count=200,
+                reviews_count=1200,
             ),
         ]
 
@@ -129,7 +137,8 @@ class TestUtilsAndScorer(unittest.TestCase):
         self.assertEqual(len(top_console), 1)
         self.assertEqual(top_console[0].price, 2199.00)
 
-        # Na categoria acessorios, as películas e cases são permitidos!
+        # Na categoria acessorios, as películas e cases com 500+ avaliações são permitidos!
+        switch_offers[0].reviews_count = 640
         top_acc, _ = rank_top_cheapest_and_reliable(
             switch_offers, query="Nintendo Switch OLED", category="acessorios"
         )
